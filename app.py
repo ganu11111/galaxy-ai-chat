@@ -41,7 +41,16 @@ ENV_FILE = BASE_DIR / ".env"
 
 load_dotenv(ENV_FILE)
 
-API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", "")).strip()
+def read_api_key():
+    """Streamlit Cloud secrets first, then .env / environment variable."""
+    try:
+        key = st.secrets.get("GEMINI_API_KEY", "")
+    except Exception:
+        key = ""
+    return (key or os.getenv("GEMINI_API_KEY", "")).strip()
+
+
+API_KEY = read_api_key()
 
 MODEL_CANDIDATES = [
     "gemini-3.5-flash-lite",
@@ -53,7 +62,7 @@ MODEL_CANDIDATES = [
     "gemini-2.5-flash-lite",
 ]
 
-# Audio sathi changle models
+# Models used for audio transcription
 TRANSCRIBE_MODELS = [
     "gemini-3.5-flash",
     "gemini-3.6-flash",
@@ -126,7 +135,7 @@ VOICE_INPUT_LANGUAGES = [
 # ==========================================
 
 CHATS_FILE = BASE_DIR / "chats.json"
-LEGACY_CHAT_FILE = CHAT_HISTORY_FILE  # junya version cha chat_history.json
+LEGACY_CHAT_FILE = CHAT_HISTORY_FILE  # chat_history.json from the old version
 SETTINGS_FILE = BASE_DIR / "settings.json"
 
 VIEWS = [
@@ -295,7 +304,7 @@ def load_chats():
             chats[chat["id"]] = chat
 
     elif LEGACY_CHAT_FILE.exists():
-        # Junya chat_history.json ek navin chat mhanun import kara
+        # Import the old chat_history.json as one chat
         old = clean_messages(load_json(LEGACY_CHAT_FILE, []))
         if old:
             chat = new_chat()
@@ -314,7 +323,7 @@ def save_chats():
         "chats": {
             cid: c
             for cid, c in st.session_state.chats.items()
-            if not c.get("incognito")
+            if not c.get("incognito") and c["messages"]
         }
     }
     return write_json(CHATS_FILE, data)
@@ -386,6 +395,7 @@ DEFAULT_STATE = {
     "img_uploader_key": 0,
     "generated_image": None,
     "verify_result": None,
+    "suggested_prompt": "",
     "view": VIEWS[0],
     "ws_code": "print('Hello, Galaxy AI!')\n",
     "ws_output": "",
@@ -408,7 +418,14 @@ if "settings" not in st.session_state:
 if "chats" not in st.session_state:
     st.session_state.chats = load_chats()
     purge_old_chats(st.session_state.settings.get("auto_delete_days", 0))
-    ensure_current_chat()
+
+    # Remove empty chats, then always start with one fresh chat
+    st.session_state.chats = {
+        cid: c for cid, c in st.session_state.chats.items() if c["messages"]
+    }
+    _fresh_chat = new_chat()
+    st.session_state.chats[_fresh_chat["id"]] = _fresh_chat
+    st.session_state.current_chat_id = _fresh_chat["id"]
     save_chats()
 
 if "ai_memories" not in st.session_state:
@@ -454,11 +471,11 @@ def gemini_generate(contents, fast=True, model_order=None, temperature=None):
     for model_name in models:
         config_args = {}
 
-        # Temperature fakt junya 2.5 models la.
+        # Temperature is only sent to the 2.5 models.
         if temperature is not None and model_name.startswith("gemini-2.5"):
             config_args["temperature"] = temperature
 
-        # thinking_budget fakt 2.5 models sathi aahe
+        # thinking_budget is only supported by the 2.5 models
         if fast and model_name.startswith("gemini-2.5"):
             try:
                 config_args["thinking_config"] = types.ThinkingConfig(
@@ -489,19 +506,19 @@ def gemini_generate(contents, fast=True, model_order=None, temperature=None):
                 last_error = error
                 tried.append(f"{model_name}: {error.code}")
 
-                # Temporary error -> ekda parat try kara
+                # Temporary error -> retry once
                 if error.code in (429, 500, 502, 503, 504):
                     if attempt == 0:
                         time.sleep(1)
                         continue
                     break
 
-                # Bad request -> config nakka karun ekda parat try kara
+                # Bad request -> retry once without the config
                 if error.code == 400 and config is not None and attempt == 0:
                     config = None
                     continue
 
-                # 404 (model nahi), 401/403 -> pudhcha model
+                # 404 (unknown model), 401/403 -> try the next model
                 break
 
     if not model_order:
@@ -509,12 +526,12 @@ def gemini_generate(contents, fast=True, model_order=None, temperature=None):
 
     if last_error:
         raise RuntimeError(
-            "Konatahi model chalala nahi. Tried -> "
+            "No model worked. Tried: "
             + ", ".join(tried)
             + f" | Last error: {last_error}"
         )
 
-    raise RuntimeError("Kontahi Gemini model available nahi.")
+    raise RuntimeError("No Gemini model is available.")
 
 
 # ==========================================
@@ -725,7 +742,7 @@ st.markdown(
         box-shadow: 0 -4px 16px rgba(0,0,0,0.4);
     }
 
-    /* Sidebar open asel tar bar main area chya madhyat rahil */
+    /* When the sidebar is open, centre the bar inside the main area */
     [data-testid="stSidebar"][aria-expanded="true"] ~ [data-testid="stMain"]
     .st-key-voice_bar {
         left: 21rem;
@@ -797,9 +814,9 @@ st.markdown(
         border-radius: 12px !important;
     }
 
-    .stButton > button,
-    .stFormSubmitButton > button,
-    .stDownloadButton > button {
+    .stButton button,
+    .stFormSubmitButton button,
+    .stDownloadButton button {
         background: linear-gradient(135deg, #7048df, #4169e1);
         color: white !important;
         border: 1px solid rgba(190,170,255,0.35);
@@ -869,10 +886,46 @@ st.markdown(
         font-weight: 700;
     }
 
-    /* Feedback + other buttons keep the galaxy gradient */
-    </style>
+    /* ===== PROFESSIONAL CHROME ===== */
+    #MainMenu,
+    footer,
+    [data-testid="stToolbar"],
+    [data-testid="stDecoration"] {
+        visibility: hidden;
+        height: 0;
+    }
+    [data-testid="stHeader"] {
+        background: transparent !important;
+    }
+    html, body, [class*="css"] {
+        font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    h5 {
+        color: #c9c9e8 !important;
+        font-weight: 500 !important;
+    }
 
-    /* Mobile fix: do not pin the voice bar on small screens */
+    /* ===== WELCOME SCREEN ===== */
+    .galaxy-hero {
+        text-align: center;
+        padding: 2.5rem 0 1.2rem 0;
+    }
+    .galaxy-hero-icon {
+        font-size: 3.2rem;
+        filter: drop-shadow(0 0 18px rgba(153,110,255,0.7));
+    }
+    .galaxy-hero h2 {
+        margin: 0.3rem 0 0.2rem 0;
+        background: linear-gradient(90deg, #b9a4ff, #6fd3ff);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+    .galaxy-hero p {
+        color: #c9c9e8;
+        margin: 0;
+    }
+
+    /* ===== MOBILE FIX: do not pin the voice bar on small screens ===== */
     @media (max-width: 768px) {
         .st-key-voice_bar {
             position: static !important;
@@ -880,7 +933,11 @@ st.markdown(
             max-height: none !important;
             margin-bottom: 1rem;
         }
+        .block-container {
+            padding-bottom: 8rem;
+        }
     }
+    </style>
     """,
     unsafe_allow_html=True,
 )
@@ -1051,8 +1108,8 @@ def verify_answer(question, answer):
 
     if not results:
         return (
-            "❓ Internet search madhye kahi milale nahi, "
-            "mhanun answer verify karta aale nahi.",
+            "❓ No web results were found, "
+            "so the answer could not be verified.",
             [],
         )
 
@@ -1264,8 +1321,8 @@ def run_code(code, language, stdin_text="", timeout=10):
                 compiler = shutil.which("gcc") or shutil.which("cc")
                 if not compiler:
                     return False, (
-                        "gcc compiler milala nahi. C code chalavnyasathi "
-                        "gcc install kara (Windows: MinGW / MSYS2)."
+                        "gcc compiler not found. To run C code, "
+                        "install gcc (Windows: MinGW / MSYS2)."
                     )
 
                 src = tmp / "main.c"
@@ -1306,8 +1363,8 @@ def run_code(code, language, stdin_text="", timeout=10):
 
         except subprocess.TimeoutExpired:
             return False, (
-                f"Timeout: code {timeout} seconds peksha jast velach chalat hota "
-                "(infinite loop ki input pahije?)."
+                f"Timeout: the code ran for more than {timeout} seconds "
+                "(infinite loop, or does it need input?)."
             )
         except Exception as error:
             return False, f"Run error: {error}"
@@ -1317,7 +1374,43 @@ def run_code(code, language, stdin_text="", timeout=10):
 # CALLBACKS
 # ==========================================
 
+SUGGESTIONS = [
+    ("🐍 Learn Python", "Teach me Python from scratch, step by step."),
+    ("🧮 Write a C program",
+     "Write a C program to reverse a string and explain it line by line."),
+    ("🔐 Cyber security basics",
+     "Explain the basics of cyber security for a beginner."),
+    ("✍️ Write in Marathi", "Help me write a short, polite email in Marathi."),
+]
+
+
+def chat_group(updated_iso):
+    """Date group name used in the sidebar chat list."""
+    try:
+        days = (datetime.now().date()
+                - datetime.fromisoformat(updated_iso).date()).days
+    except ValueError:
+        return "Older"
+
+    if days <= 0:
+        return "Today"
+    if days == 1:
+        return "Yesterday"
+    if days <= 7:
+        return "Previous 7 days"
+    return "Older"
+
+
+def set_suggestion(text):
+    st.session_state.suggested_prompt = text
+
+
 def new_chat_cb():
+    # Current chat already empty -> just stay on it
+    if not current_chat()["messages"]:
+        st.session_state.view = VIEWS[0]
+        return
+
     chat = new_chat()
     st.session_state.chats[chat["id"]] = chat
     st.session_state.current_chat_id = chat["id"]
@@ -1354,7 +1447,7 @@ def set_feedback(chat_id, idx, value):
 
     if chat and 0 <= idx < len(chat["messages"]):
         message = chat["messages"][idx]
-        # Same button parat dabla tar feedback kadhun taka
+        # Pressing the same button again removes the feedback
         message["feedback"] = (
             None if message.get("feedback") == value else value
         )
@@ -1374,7 +1467,7 @@ def apply_code_cb():
 # ==========================================
 
 def render_sources(sources):
-    """Source Link Preview: link ughadnyaadhi naav, domain ani summary."""
+    """Source link preview: title, domain and summary before opening a link."""
     if not sources:
         return
 
@@ -1411,9 +1504,9 @@ def render_feedback(chat_id, idx, message):
     )
 
     if feedback == "up":
-        col_text.caption("Changle uttar mhanun mark kele.")
+        col_text.caption("Marked as a good answer.")
     elif feedback == "down":
-        col_text.caption("Chukiche / kami uttar mhanun mark kele.")
+        col_text.caption("Marked as a poor answer.")
 
 
 # ==========================================
@@ -1422,11 +1515,11 @@ def render_feedback(chat_id, idx, message):
 
 def run_ai_task(prompt):
     if not API_KEY:
-        st.error("GEMINI_API_KEY .env file madhye set kara.")
+        st.error("GEMINI_API_KEY is missing. Add it to Streamlit secrets or your .env file.")
         return None
 
     try:
-        with st.spinner("🤖 AI vichar karat aahe..."):
+        with st.spinner("🤖 AI is thinking..."):
             return ask_ai(prompt)
     except Exception as error:
         st.error(f"AI error: {error}")
@@ -1435,9 +1528,9 @@ def run_ai_task(prompt):
 
 def render_code_workspace():
     st.subheader("💻 AI Coding Workspace")
-    st.caption("Code liha, chalva, errors fix kara ani samjun ghya.")
+    st.caption("Write, run, fix and understand code.")
 
-    # AI ne dilela code editor madhye bharnyasathi (widget banvaychya aadhi)
+    # Apply AI-generated code to the editor (must happen before the widget is created)
     if "ws_code_new" in st.session_state:
         st.session_state.ws_code = st.session_state.pop("ws_code_new")
 
@@ -1455,7 +1548,7 @@ def render_code_workspace():
         "Input (stdin) — optional",
         key="ws_stdin",
         height=70,
-        placeholder="Jar code input() / scanf() vaparat asel tar ithe liha",
+        placeholder="Enter input here if your code uses input() / scanf()",
     )
 
     b1, b2, b3 = st.columns(3)
@@ -1464,7 +1557,7 @@ def render_code_workspace():
     explain_clicked = b3.button("📖 Explain", key="ws_explain", use_container_width=True)
 
     instruction = st.text_input(
-        "✨ AI la sanga kay lihaycha / badlaycha",
+        "✨ Tell the AI what to write or change",
         key="ws_instruction",
         placeholder="Example: add input validation  /  write a function for prime numbers",
     )
@@ -1475,15 +1568,15 @@ def render_code_workspace():
     )
 
     if run_clicked:
-        with st.spinner("▶️ Code chalvat aahe..."):
+        with st.spinner("▶️ Running code..."):
             _, output = run_code(code, ws_lang, stdin_text)
         st.session_state.ws_output = output
 
     if fix_clicked:
         if not code.strip():
-            st.warning("Aadhi code liha.")
+            st.warning("Please write some code first.")
         else:
-            with st.spinner("▶️ Code chalvun pahat aahe..."):
+            with st.spinner("▶️ Running your code..."):
                 _, output = run_code(code, ws_lang, stdin_text)
             st.session_state.ws_output = output
 
@@ -1510,7 +1603,7 @@ PROGRAM OUTPUT / ERRORS:
 
     if explain_clicked:
         if not code.strip():
-            st.warning("Aadhi code liha.")
+            st.warning("Please write some code first.")
         else:
             answer = run_ai_task(f"""
 Explain this {ws_lang} code line by line for a beginner, in {exp_lang}
@@ -1529,7 +1622,7 @@ CODE:
 
     if edit_clicked:
         if not instruction.strip():
-            st.warning("AI la kay karaych te liha.")
+            st.warning("Please describe what the AI should do.")
         else:
             answer = run_ai_task(f"""
 You are an expert {ws_lang} programmer.
@@ -1555,7 +1648,7 @@ then a short summary of the changes in {exp_lang}.
 
         if st.session_state.ws_fixed_code:
             st.button(
-                "✅ Ha code editor madhye lava",
+                "✅ Apply this code to the editor",
                 key="ws_apply",
                 on_click=apply_code_cb,
             )
@@ -1563,7 +1656,7 @@ then a short summary of the changes in {exp_lang}.
     # ---------- MULTI-FILE PROJECT ----------
     st.markdown("---")
     st.subheader("📁 Multi-file project")
-    st.caption("Ek project chya anek files ekatra upload karun tyabaddal vichara.")
+    st.caption("Upload several files from one project and ask questions about it.")
 
     files = st.file_uploader(
         "Project files",
@@ -1574,17 +1667,17 @@ then a short summary of the changes in {exp_lang}.
     )
 
     question = st.text_area(
-        "Project baddal prashna",
+        "Question about the project",
         key="ws_project_question",
         height=80,
-        placeholder="Example: Ya project che structure samjav / Bug kuthe aahe?",
+        placeholder="Example: Explain this project's structure / Where is the bug?",
     )
 
     if st.button("🔍 Ask about project", key="ws_project_ask"):
         if not files:
-            st.warning("Aadhi files upload kara.")
+            st.warning("Please upload files first.")
         elif not question.strip():
-            st.warning("Prashna liha.")
+            st.warning("Please type a question.")
         else:
             limit = 60000
             parts = []
@@ -1609,8 +1702,8 @@ then a short summary of the changes in {exp_lang}.
 
             if truncated:
                 st.warning(
-                    f"Project motha aahe, fakt pahile {limit} characters "
-                    "AI kade geli."
+                    f"The project is large. Only the first {limit} characters "
+                    "were sent to the AI."
                 )
 
             answer = run_ai_task(f"""
@@ -1641,13 +1734,13 @@ def render_chat_search():
     st.subheader("🔎 Search Chats")
 
     query = st.text_input(
-        "JuNya chats madhye shodha",
+        "Search your chats",
         key="chat_search_query",
         placeholder="Example: python loop",
     )
 
     if not query.strip():
-        st.info("Shabd liha, mhanje sarva chats madhun result disatil.")
+        st.info("Type a word to search all your chats.")
         return
 
     hits = search_chats(query)
@@ -1708,25 +1801,25 @@ def render_privacy():
     st.markdown("##### Settings")
 
     save_history = st.toggle(
-        "💾 Chat history disk var save kara",
+        "💾 Save chat history to disk",
         value=settings["save_history"],
         key="priv_save_history",
-        help="OFF kelyas navin chats fakt session paryant rahatil.",
+        help="When OFF, new chats exist only for the current session.",
     )
     use_memory = st.toggle(
-        "🧠 AI la mazhi memory vaparu dya",
+        "🧠 Let the AI use my memory",
         value=settings["use_memory"],
         key="priv_use_memory",
-        help="OFF kelyas saved memories AI kade jaat nahit.",
+        help="When OFF, saved memories are not sent to the AI.",
     )
 
     day_options = [0, 7, 30, 90, 365]
     current_days = settings.get("auto_delete_days", 0)
     auto_days = st.selectbox(
-        "🧹 Juni chats auto-delete",
+        "🧹 Auto-delete old chats",
         day_options,
         index=day_options.index(current_days) if current_days in day_options else 0,
-        format_func=lambda d: "Never" if d == 0 else f"{d} divasanpeksha juni",
+        format_func=lambda d: "Never" if d == 0 else f"Older than {d} days",
         key="priv_days",
     )
 
@@ -1743,22 +1836,22 @@ def render_privacy():
         save_settings()
         if save_history:
             save_chats()
-        st.success("Settings save zhalya.")
+        st.success("Settings saved.")
 
-    if auto_days and st.button("🧹 Auto-delete aata laga", key="priv_purge_now"):
+    if auto_days and st.button("🧹 Run auto-delete now", key="priv_purge_now"):
         removed = purge_old_chats(
             auto_days, keep_id=st.session_state.current_chat_id
         )
         save_chats()
-        st.success(f"{removed} juni chat(s) delete zhalya.")
+        st.success(f"{removed} old chat(s) deleted.")
 
     st.caption(
-        "Incognito chat: sidebar madhun chat var 🕶️ Incognito select kara — "
-        "ti disk var save honar nahi."
+        "Incognito chat: tick 🕶️ Incognito in the sidebar — "
+        "the chat is not saved to disk."
     )
 
     st.markdown("---")
-    st.markdown("##### Tumcha data")
+    st.markdown("##### Your data")
 
     all_messages = [
         m for c in st.session_state.chats.values() for m in c["messages"]
@@ -1784,7 +1877,7 @@ def render_privacy():
         indent=2,
     )
     st.download_button(
-        "⬇️ Maza sarva data download kara (JSON)",
+        "⬇️ Download all my data (JSON)",
         data=export_all,
         file_name="galaxy_ai_all_data.json",
         mime="application/json",
@@ -1794,7 +1887,7 @@ def render_privacy():
     st.markdown("---")
     st.markdown("##### ⚠️ Danger zone")
 
-    confirm = st.checkbox("Mala khatri aahe (delete parat milat nahi)", key="priv_confirm")
+    confirm = st.checkbox("I am sure (deleted data cannot be restored)", key="priv_confirm")
 
     d1, d2, d3 = st.columns(3)
     d1.button(
@@ -1825,7 +1918,7 @@ def render_privacy():
 # SIDEBAR
 # ==========================================
 
-attached_image = None  # (bytes, mime) - pudhchya message sobat jail
+attached_image = None  # (bytes, mime) - sent with the next message
 
 with st.sidebar:
     st.markdown("# 🌌 Galaxy AI")
@@ -1860,7 +1953,7 @@ with st.sidebar:
     _used_chats = sum(1 for c in _all_chats if c["messages"])
     _total_msgs = sum(len(c["messages"]) for c in _all_chats)
 
-    st.caption(f"📊 Ata paryant chats: {_used_chats} · Messages: {_total_msgs}")
+    st.caption(f"📊 Chats: {_used_chats} · Messages: {_total_msgs}")
 
     def _chat_button(chat):
         is_current = chat["id"] == st.session_state.current_chat_id
@@ -1878,25 +1971,26 @@ with st.sidebar:
             help=f"{len(chat['messages'])} messages · {chat['updated'][:10]}",
         )
 
-    for _chat in _all_chats[:8]:
-        _chat_button(_chat)
-
-    if len(_all_chats) > 8:
-        with st.expander(f"📚 Juni chats ({len(_all_chats) - 8})"):
-            for _chat in _all_chats[8:]:
-                _chat_button(_chat)
+    with st.container(height=min(70 + 50 * len(_all_chats), 380)):
+        _last_group = None
+        for _chat in _all_chats:
+            _group = chat_group(_chat["updated"])
+            if _group != _last_group:
+                st.caption(_group.upper())
+                _last_group = _group
+            _chat_button(_chat)
 
     cur = current_chat()
 
     nc1, nc2 = st.columns(2)
     nc1.button("🧹 Clear", key="clear_chat_btn", on_click=clear_chat_cb,
-               help="Hi chat rikami kara", use_container_width=True)
+               help="Clear this chat", use_container_width=True)
     nc2.button("🗑️ Delete", key="delete_chat_btn", on_click=delete_chat_cb,
-               help="Hi chat delete kara", use_container_width=True)
+               help="Delete this chat", use_container_width=True)
 
-    # Key madhye title aahe, mhanun title badalla ki widget navin hoto
+    # The title is part of the key, so the widget resets when the title changes
     new_title = st.text_input(
-        "✏️ Chat che naav",
+        "✏️ Chat name",
         value=cur["title"],
         key=f"rename_{cur['id']}_{cur['title']}",
     )
@@ -1906,7 +2000,7 @@ with st.sidebar:
         st.rerun()
 
     incognito = st.checkbox(
-        "🕶️ Incognito (disk var save honar nahi)",
+        "🕶️ Incognito (not saved to disk)",
         value=bool(cur.get("incognito", False)),
         key=f"incog_{cur['id']}",
     )
@@ -1956,13 +2050,13 @@ with st.sidebar:
                 )
                 if text_len > PDF_CHAR_LIMIT:
                     st.caption(
-                        "PDF motha aahe: tumchya prashnashi jupnare "
-                        "bhag (page number sahit) AI kade jatil."
+                        "Large PDF: only the parts matching your question "
+                        "(with page numbers) are sent to the AI."
                     )
-                st.caption("Ata chat madhye PDF baddal prashna vichara.")
+                st.caption("Now ask questions about the PDF in the chat.")
             else:
                 st.warning(
-                    "Ya PDF madhye text milala nahi (scanned/image PDF asu shakto)."
+                    "No text found in this PDF (it may be a scanned/image PDF)."
                 )
 
             if st.button("🗑️ Remove PDF", key="remove_galaxy_pdf"):
@@ -1976,7 +2070,7 @@ with st.sidebar:
     # ---------- IMAGE UNDERSTANDING ----------
     with st.expander("🖼️ Image Understanding"):
         uploaded_image = st.file_uploader(
-            "Photo kiwa screenshot",
+            "Photo or screenshot",
             type=["png", "jpg", "jpeg", "webp"],
             key=f"img_upload_{st.session_state.img_uploader_key}",
         )
@@ -1988,8 +2082,8 @@ with st.sidebar:
             )
             st.image(uploaded_image, use_container_width=True)
             st.caption(
-                "Hi image pudhchya message sobat AI kade jail. "
-                "Example: 'Hya screenshot madhil error samjav'."
+                "This image is sent with your next message. "
+                "Example: 'Explain the error in this screenshot'."
             )
 
     st.markdown("---")
@@ -1998,7 +2092,7 @@ with st.sidebar:
     st.subheader("🧠 AI Memory")
 
     memory_text = st.text_input(
-        "Kay lakshat thevayche?",
+        "What should I remember?",
         key="memory_text_input",
         placeholder="Example: I am learning Python",
     )
@@ -2013,7 +2107,7 @@ with st.sidebar:
                 st.success("Memory saved!")
                 st.rerun()
             else:
-                st.info("Hi memory aadhipasun save aahe.")
+                st.info("This memory is already saved.")
 
     with st.expander("📚 Saved Memories"):
         for i, memory in enumerate(st.session_state.ai_memories):
@@ -2037,7 +2131,7 @@ with st.sidebar:
         "🌐 Live Web Search",
         value=False,
         key="use_web_search",
-        help="ON: internet var shodhun uttar dil jail ani source links disatil.",
+        help="ON: searches the web and shows source links with the answer.",
     )
 
     with st.expander("🎓 AI Learning Mode"):
@@ -2045,7 +2139,7 @@ with st.sidebar:
             "Learning mode ON",
             value=False,
             key="learning_on",
-            help="AI vishay beginner pasun step-by-step shikvel.",
+            help="The AI teaches a topic step by step, starting from the basics.",
         )
         learning_level = st.selectbox(
             "Level",
@@ -2148,14 +2242,14 @@ with st.sidebar:
 
             if export_data is None:
                 st.warning(
-                    "PDF sathi `pip install reportlab` kara. "
-                    "Marathi chya perfect PDF sathi HTML export kara ani "
-                    "browser madhun Print -> Save as PDF vapra."
+                    "For PDF export run `pip install reportlab`. "
+                    "For perfect Marathi text, export as HTML and use "
+                    "Print -> Save as PDF in your browser."
                 )
             else:
                 st.caption(
-                    "Tip: Marathi (Devanagari) madhe jodakshare PDF madhye "
-                    "thodi chukichi disu shaktat. HTML export jast changla aahe."
+                    "Tip: Marathi conjunct letters may look slightly wrong in PDF. "
+                    "HTML export is better for Devanagari text."
                 )
 
         if export_data is not None:
@@ -2202,9 +2296,11 @@ cur = current_chat()
 msgs = cur["messages"]
 
 # Layout:
-#   - Chat messages madhye
-#   - Voice box (mic + options) screen chya khali FIXED (CSS ne)
-#   - Typing box (st.chat_input) tyachya khali FIXED
+#   - Chat messages in the middle
+#   - Voice box (mic + options) fixed near the bottom (CSS)
+#   - Typing box (st.chat_input) fixed at the very bottom
+st.caption(f"💬 {cur['title']} · {len(msgs)} messages")
+
 input_area = st.container(key="voice_bar")
 chat_area = st.container()
 
@@ -2234,18 +2330,18 @@ with input_area:
         voice_answer_mode = st.selectbox(
             "Voice answer",
             [
-                "Auto (mic ne bollyas)",
+                "Auto",
                 "Always ON",
                 "OFF",
             ],
             key="voice_answer_mode",
             label_visibility="collapsed",
             format_func=lambda x: {
-                "Auto (mic ne bollyas)": "🔊 Auto",
+                "Auto": "🔊 Auto",
                 "Always ON": "🔊 ON",
                 "OFF": "🔇 OFF",
             }[x],
-            help="Voice answer: Auto = mic ne bollyas, ON = nehmi, OFF = kadhich nahi",
+            help="Voice answer: Auto = only when you used the mic, ON = always, OFF = never",
         )
 
     with opt3:
@@ -2254,8 +2350,8 @@ with input_area:
             value=False,
             key="instant_voice",
             help=(
-                "OFF: mic cha text aadhi disel, durust karun send kara. "
-                "ON: audio direct AI kade jail."
+                "OFF: review and edit the transcribed text, then send. "
+                "ON: the audio goes directly to the AI."
             ),
         )
 
@@ -2275,7 +2371,7 @@ with input_area:
             st.session_state.last_audio_hash = audio_hash
 
             if not API_KEY:
-                st.error("GEMINI_API_KEY .env file madhye set kara.")
+                st.error("GEMINI_API_KEY is missing. Add it to Streamlit secrets or your .env file.")
 
             elif instant_voice:
                 voice_audio = audio_bytes
@@ -2283,7 +2379,7 @@ with input_area:
                 answer_with_voice = True
 
             else:
-                with st.spinner("🎧 Voice text madhye convert hot aahe..."):
+                with st.spinner("🎧 Converting voice to text..."):
                     try:
                         recognized_text = transcribe_audio(
                             audio_bytes,
@@ -2295,7 +2391,7 @@ with input_area:
                             st.session_state.voice_draft = recognized_text
                             st.session_state.voice_draft_active = True
                         else:
-                            st.warning("Clear speech milala nahi. Punha bola.")
+                            st.warning("No clear speech detected. Please try again.")
 
                     except Exception as error:
                         st.error(f"Voice transcription error: {error}")
@@ -2303,7 +2399,7 @@ with input_area:
     # Voice draft (multi-line editable box)
     if st.session_state.voice_draft_active:
         st.text_area(
-            "🎧 Olkhlela text tapasa kiwa durust kara",
+            "🎧 Check or edit the recognised text",
             key="voice_draft",
             height=68,
         )
@@ -2323,8 +2419,8 @@ with input_area:
 # ==========================================
 # TYPING BOX (FIXED AT BOTTOM)
 # ==========================================
-# st.chat_input container chya BAHER (top level) pahije,
-# tarach to screen chya khali fixed rahto.
+# st.chat_input must be at the top level (outside containers),
+# otherwise it is not pinned to the bottom of the screen.
 # Enter = send, Shift+Enter = new line
 
 typed_prompt = st.chat_input(
@@ -2339,6 +2435,11 @@ if (
     and voice_audio is None
 ):
     prompt = typed_prompt.strip()
+    answer_with_voice = False
+
+if not prompt and voice_audio is None and st.session_state.suggested_prompt:
+    prompt = st.session_state.suggested_prompt
+    st.session_state.suggested_prompt = ""
     answer_with_voice = False
 
 
@@ -2362,6 +2463,29 @@ with chat_area:
     st.markdown("---")
 
     chat_id = cur["id"]
+
+    # Welcome screen (fresh chat)
+    if not msgs and not prompt and voice_audio is None:
+        st.markdown(
+            """
+            <div class="galaxy-hero">
+                <div class="galaxy-hero-icon">🌌</div>
+                <h2>How can I help you today?</h2>
+                <p>Ask anything. Learn anything. Build anything.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        _cards = st.columns(2)
+        for _i, (_label, _text) in enumerate(SUGGESTIONS):
+            _cards[_i % 2].button(
+                _label,
+                key=f"suggest_{_i}",
+                on_click=set_suggestion,
+                args=(_text,),
+                use_container_width=True,
+            )
 
     # Display old messages (with sources + feedback buttons)
     for idx, message in enumerate(msgs):
@@ -2407,15 +2531,15 @@ with chat_area:
         with st.chat_message("assistant"):
             if not API_KEY:
                 error_text = (
-                    "GEMINI_API_KEY milali nahi. "
-                    "Project folder madhil .env file tapasa."
+                    "GEMINI_API_KEY was not found. "
+                    "Check Streamlit secrets or the .env file in the project folder."
                 )
 
             else:
                 try:
-                    # Live web search (fakt typed / voice-draft prompt sathi)
+                    # Live web search (typed / voice-draft prompts only)
                     if use_web_search and prompt:
-                        with st.spinner("🌐 Internet var shodhat aahe..."):
+                        with st.spinner("🌐 Searching the web..."):
                             sources = web_search(prompt)
 
                     system_prompt = build_system_prompt(
@@ -2488,7 +2612,7 @@ Conversation so far:
                             )
                         )
 
-                    with st.spinner("✨ Galaxy AI vichar karat aahe..."):
+                    with st.spinner("✨ Galaxy AI is thinking..."):
                         response = gemini_generate(contents)
 
                     raw_text = (response.text or "").strip()
@@ -2504,7 +2628,7 @@ Conversation so far:
                             heard = match.group(1).strip()
                             answer = match.group(2).strip()
                         else:
-                            # Format milala nahi -> poorna text uttar mana
+                            # Format not found -> treat the whole text as the answer
                             answer = raw_text
 
                         if (
@@ -2525,10 +2649,10 @@ Conversation so far:
                 st.error(error_text)
 
             elif no_speech:
-                st.warning("Clear speech milala nahi. Punha bola.")
+                st.warning("No clear speech detected. Please try again.")
 
             elif not answer:
-                st.warning("AI ne rikama uttar dila. Punha prayatna kara.")
+                st.warning("The AI returned an empty answer. Please try again.")
 
             else:
                 if heard:
@@ -2555,28 +2679,28 @@ Conversation so far:
                 render_sources(sources)
                 render_feedback(chat_id, len(msgs) - 1, assistant_message)
 
-        # ----- Image fakt ekach message sathi -----
+        # ----- The image is used for one message only -----
         if answered and attached_image:
             st.session_state.img_uploader_key += 1
 
         # ----- Voice answer -----
         if answered and speak_answer:
             try:
-                with st.spinner("🔊 Awaaz tayar hot aahe..."):
+                with st.spinner("🔊 Preparing voice answer..."):
                     audio_out = make_speech(answer, language)
 
                 if audio_out:
                     st.session_state.last_audio_output = audio_out
                     st.audio(audio_out, format="audio/mp3", autoplay=True)
             except Exception as error:
-                st.warning(f"Voice answer tayar karta aala nahi: {error}")
+                st.warning(f"Could not create the voice answer: {error}")
 
     # ---------- SOURCE VERIFICATION ----------
     if msgs and msgs[-1]["role"] == "assistant":
         if st.button("✅ Verify last answer", key="verify_btn",
-                     help="Uttar internet var chya sources shi tapasa"):
+                     help="Check the answer against web sources"):
             if not API_KEY:
-                st.error("GEMINI_API_KEY .env file madhye set kara.")
+                st.error("GEMINI_API_KEY is missing. Add it to Streamlit secrets or your .env file.")
             else:
                 question = next(
                     (m["content"] for m in reversed(msgs[:-1])
@@ -2584,7 +2708,7 @@ Conversation so far:
                     "",
                 )
                 try:
-                    with st.spinner("🔎 Sources tapasat aahe..."):
+                    with st.spinner("🔎 Checking sources..."):
                         verdict, verify_sources = verify_answer(
                             question, msgs[-1]["content"]
                         )
@@ -2610,7 +2734,7 @@ Conversation so far:
                 st.markdown(verify["text"])
                 render_sources(verify["sources"])
 
-    # Replay button (fakt jevha audio uplabdh asel)
+    # Replay button (only when audio is available)
     if st.session_state.last_audio_output:
         if st.button("🔁 Replay last voice answer", key="replay_audio"):
             st.audio(
