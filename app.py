@@ -2209,7 +2209,7 @@ voice_mime = "audio/wav"
 answer_with_voice = False
 
 with input_area:
-    opt1, opt2, opt3, opt4 = st.columns([1.3, 1.3, 1.1, 2.6])
+    opt1, opt2, opt3, opt4 = st.columns([1.3, 1.3, 1.1, 2.6], gap="small")
 
     with opt1:
         voice_language = st.selectbox(
