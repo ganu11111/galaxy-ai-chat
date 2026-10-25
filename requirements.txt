@@ -1,1 +1,7 @@
+
 streamlit
+pypdf
+google-genai
+python-dotenv
+gTTS
+ddgs
