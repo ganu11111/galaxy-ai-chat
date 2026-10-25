@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+__pycache__/
+*.pyc
+.venv/
+venv/
+chat_history.json
+ai_memory.json
+app_backup.py
