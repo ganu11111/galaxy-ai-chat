@@ -41,7 +41,7 @@ ENV_FILE = BASE_DIR / ".env"
 
 load_dotenv(ENV_FILE)
 
-API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", "")).strip()
 
 MODEL_CANDIDATES = [
     "gemini-3.5-flash-lite",
