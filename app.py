@@ -871,6 +871,16 @@ st.markdown(
 
     /* Feedback + other buttons keep the galaxy gradient */
     </style>
+
+    /* Mobile fix: do not pin the voice bar on small screens */
+    @media (max-width: 768px) {
+        .st-key-voice_bar {
+            position: static !important;
+            width: 100% !important;
+            max-height: none !important;
+            margin-bottom: 1rem;
+        }
+    }
     """,
     unsafe_allow_html=True,
 )
